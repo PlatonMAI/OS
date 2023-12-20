@@ -1,3 +1,0 @@
-create 2
-create 3 2
-create 4 2
