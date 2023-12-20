@@ -10,7 +10,7 @@ int getPort(int id) {
 }
 std::string getAddr(int port) {
     std::stringstream ss;
-    ss << "tcp://localhost:" << port;
+    ss << "tcp://127.0.0.1:" << port;
 
     return ss.str();
 }

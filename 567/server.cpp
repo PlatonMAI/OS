@@ -47,6 +47,38 @@ void changeMainCalcNode(socket_t &pub, int &idMainCalcNode, int id) {
     idMainCalcNode = id;
 }
 
+void sendMsg(std::string msg, socket_t &pub) {
+    mutable_buffer mbuf = buffer(msg);
+    auto res_s = pub.send(mbuf, send_flags::none);
+    if (!res_s.has_value()) {
+        print({"Ошибка при отправке"});
+        return;
+    }
+}
+
+void execThread(std::string msg, socket_t &pub, socket_t &sub, int id) {
+    mutable_buffer mbuf = buffer(msg);
+    auto res_s = pub.send(mbuf, send_flags::none);
+    if (!res_s.has_value()) {
+        print({"Ошибка при отправке"});
+        return;
+    }
+
+    message_t response(msg.size());
+    auto res_r = sub.recv(response, recv_flags::none);
+    if (!res_r.has_value()) {
+        print({"Ошибка при получении"});
+        return;
+    }
+
+    std::string res = response.to_string();
+    std::stringstream ss;
+    ss << "Ok:" << id << ": " << res << "\n";
+    print({ss.str()});
+
+    return;
+}
+
 std::optional< std::pair<int, int> > killNode(int id, std::list<Node> &nodes, int &idMainCalcNode, socket_t &pub, std::map<int, std::chrono::_V2::system_clock::time_point> &heartbits) {
     if (id == -1) {
         return {};
@@ -65,23 +97,15 @@ std::optional< std::pair<int, int> > killNode(int id, std::list<Node> &nodes, in
             else
                 res.second = -2;
 
-            kill_process(i->pid);
-
-            std::cout << "Ok: " << i->pid << std::endl;
+            
+            print({"Ok: ", itos(i->pid), "\n"});
             nodes.erase(i);
 
             auto j = nodes.begin();
             for (; j != nodes.end(); ++j) {
                 if (j->isChild && j->idParent == id) {
                     res.second = killNode(j->id, nodes, idMainCalcNode, std::ref(pub), heartbits)->second;
-                }
-            }
-
-            if (id == idMainCalcNode) {
-                if (nodes.size() > 1) {
-                    changeMainCalcNode(std::ref(pub), idMainCalcNode, std::next(nodes.begin(), 1)->id);
-                } else {
-                    idMainCalcNode = -1;
+                    j = nodes.begin();
                 }
             }
 
@@ -96,77 +120,73 @@ std::optional< std::pair<int, int> > killNode(int id, std::list<Node> &nodes, in
     return res;
 }
 
-void sendMsg(std::string msg, socket_t &pub) {
-    mutable_buffer mbuf = buffer(msg);
-    auto res_s = pub.send(mbuf, send_flags::none);
-    if (!res_s.has_value()) {
-        print({"Нам пизда при отправке"});
-        return;
-    }
-}
-
-std::optional< std::pair<int, int> > killNodeFull(int id, std::list<Node> &nodes, int &idMainCalcNode, socket_t &pub, std::map<int, std::chrono::_V2::system_clock::time_point> &heartbits) {
+std::optional< std::pair<int, int> > killNodeFull(int id, std::list<Node> &nodes, int &idMainCalcNode, socket_t &pub, socket_t &sub, std::map<int, std::chrono::_V2::system_clock::time_point> &heartbits, std::vector<std::thread> &threads) {
     auto res = killNode(id, nodes, idMainCalcNode, std::ref(pub), heartbits);
     if (!res)
         return {};
 
+    // std::cout << "Границы при удалении: " << res->first << " " << res->second << "\n";
+
     std::stringstream ss;
+    ss << "unbind " << res->first << " " << res->second << " search";
+    if (res->first == -1)
+        ss << " last";
+    else
+        ss << " first";
+    threads.emplace_back(execThread, ss.str(), std::ref(pub), std::ref(sub), res->first);
+
+    threads.back().join();
+
+    if (id == idMainCalcNode) {
+        if (nodes.size() > 1) {
+            changeMainCalcNode(std::ref(pub), idMainCalcNode, std::next(nodes.begin(), 1)->id);
+        } else {
+            idMainCalcNode = -1;
+        }
+    }
+
     if (res->first != -1) {
+        ss.str("");
         ss << "rebind " << res->first << " next " << res->second;
         sendMsg(ss.str(), pub);
+        std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(100)));
     }
 
     if (res->second != -2) {
+        std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(100)));
+        // std::cout << "Буду менять предыдущий" << std::endl;
+        ss.str("");
         ss.clear();
         ss << "rebind " << res->second << " prev " << res->first;
         sendMsg(ss.str(), pub);
+        std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(100)));
     }
 
     return res;
 }
 
-void execThread(std::string msg, socket_t &pub, socket_t &sub, int id) {
-    mutable_buffer mbuf = buffer(msg);
-    auto res_s = pub.send(mbuf, send_flags::none);
-    if (!res_s.has_value()) {
-        print({"Нам пизда при отправке"});
-        return;
-    }
-
-    message_t response(msg.size());
-    auto res_r = sub.recv(response, recv_flags::none);
-    if (!res_r.has_value()) {
-        print({"Нам пизда при получении"});
-        return;
-    }
-
-    std::string res = response.to_string();
-    std::stringstream ss;
-    ss << "Ok:" << id << ": " << res << "\n";
-    print({ss.str()});
-
-    return;
-}
-
-void heartbitCheck(std::map<int, std::chrono::_V2::system_clock::time_point> &heartbits, std::chrono::milliseconds time, std::list<Node> &nodes, int &idMainCalcNode, socket_t &pub) {
+void heartbitCheck(std::map<int, std::chrono::_V2::system_clock::time_point> &heartbits, std::chrono::milliseconds time, std::list<Node> &nodes, int &idMainCalcNode, socket_t &pub, socket_t &sub, std::vector<std::thread> &threads) {
     while (true) {
         std::this_thread::sleep_for(std::chrono::duration(4 * time));
 
         std::vector<int> unavailableNodes;
         auto end = std::chrono::system_clock::now();
-        std::cout << "Начинаю проверку узлов" << "\n";
+        // print({"Начинаю проверку узлов\n"});
+        std::cout << "Начинаю проверку узлов\n";
         for (auto elem : heartbits) {
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>( end - elem.second );
-            std::cout << elem.first << ": " << duration.count() << "\n";
+            // print({itos(elem.first), ": ", itos(duration.count()), "\n"});
+            std::cout << itos(elem.first) << ": " << itos(duration.count()) << "\n";
             if (duration > 4 * time) {
-                print({"Heartbit: node ", itos(elem.first), " is unavailable now\n"});
+                // print({"Heartbit: node ", itos(elem.first), " is unavailable now\n"});
+                std::cout << "Heartbit: node " << itos(elem.first) << " is unavailable now\n";
 
                 unavailableNodes.push_back(elem.first);
             }
         }
 
         for (int id : unavailableNodes)
-            killNodeFull(id, nodes, idMainCalcNode, std::ref(pub), heartbits);
+            killNodeFull(id, nodes, idMainCalcNode, std::ref(pub), std::ref(sub), heartbits, std::ref(threads));
     }
 }
 void heartbitRecv(socket_t &sub, std::map<int, std::chrono::_V2::system_clock::time_point> &heartbits, int time) {
@@ -174,11 +194,12 @@ void heartbitRecv(socket_t &sub, std::map<int, std::chrono::_V2::system_clock::t
         zmq::message_t m(MAX_LEN_MSG);
         auto res = sub.recv(m, zmq::recv_flags::none);
         if (!res.has_value()) {
-            std::cout << "Пиздец при получении" << std::endl;
+            std::cout << "Ошибка при получении" << std::endl;
             return;
         }
 
         heartbits[stoi(m.to_string())] = std::chrono::system_clock::now();
+        // std::cout << m.to_string() << "\n";
     }
 }
 
@@ -202,11 +223,11 @@ int main() {
     while (true) {
         bool ok = true;
 
-        // print_mutex.lock();
+        print_mutex.lock();
         std::cout << "$ ";
         std::string s;
         std::cin >> s;
-        // print_mutex.unlock();
+        print_mutex.unlock();
 
         if (s == "create") {
             int id;
@@ -263,6 +284,7 @@ int main() {
 
             pid_t process_id = create_process();
             if (process_id == 0) {
+                std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(1000)));
                 execl("client.out", "client.out", itos(idPrev).c_str(), itos(id).c_str(), itos(idNext).c_str(), NULL);
                 perror("exec");
                 exit(-1);
@@ -272,20 +294,24 @@ int main() {
             
             Node node{id, isChild, idParent, process_id};
             if (isChild) {
-                nodes.insert(++iterParent, node);
+                auto iterNode = nodes.insert(++iterParent, node);
 
                 std::stringstream ss;
                 if (idParent != -1) {
                     int idNodePrev = idParent;
                     ss << "rebind " << idNodePrev << " next " << id;
                     sendMsg(ss.str(), pub);
+                    std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(100)));
                 }
 
-                auto iterNodeNext = std::prev(iterParent, 1);
-                int idNodeNext = iterNodeNext->id;
-                ss.clear();
-                ss << "rebind " << idNodeNext << " prev " << id;
-                sendMsg(ss.str(), pub);
+                auto iterNodeNext = std::next(iterNode);
+                if (iterNodeNext != nodes.end()) {
+                    int idNodeNext = iterNodeNext->id;
+                    ss.str("");
+                    ss << "rebind " << idNodeNext << " prev " << id;
+                    sendMsg(ss.str(), pub);
+                    std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(100)));
+                }
             } else {
                 nodes.push_back(node);
                 
@@ -295,28 +321,35 @@ int main() {
                     std::stringstream ss;
                     ss << "rebind " << idNode << " next " << id;
                     sendMsg(ss.str(), pub);
+                    std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(100)));
                 }
             }
 
             if (idMainCalcNode == -1 || idParent == -1)
                 changeMainCalcNode(pub, idMainCalcNode, id);
 
-            std::cout << "Ok: " << process_id << std::endl;
+            print({"Ok: ", itos(process_id), "\n"});
 
-            for (auto elem : nodes)
+            for (auto elem : nodes) {
+                print_mutex.lock();
                 std::cout << elem;
+                print_mutex.unlock();
+            }
         } else if (s == "kill") {
             int id;
             std::cin >> id;
 
-            auto res = killNodeFull(id, nodes, idMainCalcNode, std::ref(pub), heartbits);
+            auto res = killNodeFull(id, nodes, idMainCalcNode, std::ref(pub), std::ref(sub), std::ref(heartbits), std::ref(threads));
             if (!res) {
                 std::cout << "Error: Node not found" << std::endl;
                 continue;
             }
 
-            for (auto elem : nodes)
+            for (auto elem : nodes) {
+                print_mutex.lock();
                 std::cout << elem;
+                print_mutex.unlock();
+            }
         } else if (s == "exec") {
             bool ok = true;
 
@@ -355,9 +388,10 @@ int main() {
             std::stringstream ss;
             ss << "heartbit " << time;
             sendMsg(ss.str(), pub);
+            std::this_thread::sleep_for(std::chrono::duration(std::chrono::milliseconds(100)));
 
             threads.emplace_back(heartbitRecv, std::ref(subHeartbit), std::ref(heartbits), time);
-            threads.emplace_back(heartbitCheck, std::ref(heartbits), time_ms, std::ref(nodes), std::ref(idMainCalcNode), std::ref(pub));
+            threads.emplace_back(heartbitCheck, std::ref(heartbits), time_ms, std::ref(nodes), std::ref(idMainCalcNode), std::ref(pub), std::ref(sub), std::ref(threads));
         } else if (s == "exit") {
             for (auto elem : nodes) {
                 kill_process(elem.pid);
