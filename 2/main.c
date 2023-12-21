@@ -61,7 +61,7 @@ int main(int argc, char* argv[]) {
     fread(pattern, sizeof(char), MAX_LENGTH, stdin);
     pattern_length = strlen(pattern);
 
-    FILE* file_descriptor = fopen("test/string.txt", "r");
+    FILE* file_descriptor = fopen("string.txt", "r");
     fread(text, sizeof(char), MAX_LENGTH, file_descriptor);
     text_length = strlen(text);
 
@@ -86,10 +86,10 @@ int main(int argc, char* argv[]) {
         pthread_join(threads_id[index], NULL);
     }
 
-    printf("Индексы совпадений:\n");
-    for (int index = 0; index < index_result; ++index)
-        printf("%d ", result[index]);
-    printf("\n");
+    // printf("Индексы совпадений:\n");
+    // for (int index = 0; index < index_result; ++index)
+    //     printf("%d ", result[index]);
+    // printf("\n");
 
     gettimeofday(&time_end, NULL);
     long seconds = (time_end.tv_sec - time_start.tv_sec);
